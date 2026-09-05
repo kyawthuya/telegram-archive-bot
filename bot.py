@@ -261,7 +261,7 @@ async def inline_calendar_handler(update: Update, context: ContextTypes.DEFAULT_
                 await context.bot.send_document(chat_id=query.message.chat_id, document=file_id, caption=text)
 
 if __name__ == '__main__':
-    TOKEN = "8883799522:AAGvFbHe5FdEolSk0ZA-6OqCM-nUmn4Z0PE"
+    TOKEN = "8883799522:AAEKrTtdrBr3keR3lxRLYdMvU-eER-7Xt3Q"
     
     application = ApplicationBuilder().token(TOKEN).post_init(post_init).build()
     
