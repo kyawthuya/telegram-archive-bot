@@ -277,4 +277,4 @@ if __name__ == '__main__':
     application.add_handler(MessageHandler(media_filter, capture_group_media))
     
     print("Archive Bot (Calendar UI Added) စတင် အလုပ်လုပ်နေပါပြီ...")
-    application.run_polling(drop_pending_updates=True)
+    application.run_polling()
