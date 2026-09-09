@@ -274,7 +274,7 @@ if __name__ == '__main__':
     flask_thread.daemon = True
     flask_thread.start()
 
-    TOKEN = "8883799522:AAEKrTtdrBr3keR3lxRLYdMvU-eER-7Xt3Q"
+    TOKEN = "TOKEN = "8883799522:AAEz_HrD2_vggxq5gbWdoZWLbvVx2hQ4g-c""
     
     application = ApplicationBuilder().token(TOKEN).post_init(post_init).build()
     
