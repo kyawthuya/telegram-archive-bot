@@ -1,7 +1,9 @@
 import os
 import sqlite3
 import re
+import threading
 from datetime import datetime
+from flask import Flask
 from telegram import Update, BotCommand, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler, CallbackQueryHandler, filters
 import logging
@@ -13,6 +15,18 @@ logging.basicConfig(
 
 DOWNLOAD_DIR = "downloads"
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+
+# --- FLASK WEB SERVER (Render Sleep မသွားစေရန်) ---
+app_flask = Flask(__name__)
+
+@app_flask.route('/')
+def home():
+    return "Archive Bot is alive and running!"
+
+def run_flask():
+    port = int(os.environ.get("PORT", 10000))
+    app_flask.run(host='0.0.0.0', port=port)
+# ------------------------------------------------
 
 def init_db():
     conn = sqlite3.connect('archive.db')
@@ -185,14 +199,11 @@ def create_calendar(year=None, month=None):
     if month is None: month = now.month
     
     keyboard = []
-    # လ နှင့် နှစ် ခေါင်းစဉ်
     keyboard.append([InlineKeyboardButton(f"🗓 {year}-{month:02d}", callback_data="IGNORE")])
     
-    # ရက်သတ္တပတ် အတိုကောက်များ
     week_days = ["မန", "အင်", "ဗု", "ကြာ", "သော", "စ", "နာ"]
     keyboard.append([InlineKeyboardButton(day, callback_data="IGNORE") for day in week_days])
     
-    # ထိုလအတွင်း ရက်များ ထည့်သွင်းခြင်း (ရိုးရှင်းသော 1 မှ 30/31 ထိ ဇယား)
     days_in_month = 31 if month in [1,3,5,7,8,10,12] else (30 if month in [4,6,9,11] else 28)
     
     week = []
@@ -208,7 +219,6 @@ def create_calendar(year=None, month=None):
     return InlineKeyboardMarkup(keyboard)
 
 async def calendar_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # စတင်ရက် ရွေးချယ်ရန် ပြက္ခဒိန်ပြသခြင်း
     context.user_data['dr_state'] = 'WAIT_START'
     reply_markup = create_calendar()
     await update.message.reply_text("📅 **စတင်မည့်ရက် (Start Date)** ကို ရွေးချယ်ပါ -", reply_markup=reply_markup, parse_mode="Markdown")
@@ -238,13 +248,11 @@ async def inline_calendar_handler(update: Update, context: ContextTypes.DEFAULT_
             start_date = context.user_data.get('start_date')
             end_date = selected_date
             
-            # ရက်စွဲအမှားအယွင်း စစ်ဆေးခြင်း (စတင်ရက်သည် ပြီးဆုံးရက်ထက် နောက်ကျနေပါက)
             if start_date > end_date:
                 start_date, end_date = end_date, start_date
                 
             await query.edit_message_text(text=f"🔍 ရှာဖွေနေသည်... ({start_date} မှ {end_date} ထိ)")
             
-            # Database မှ ရှာဖွေခြင်း
             conn = sqlite3.connect('archive.db')
             cursor = conn.cursor()
             cursor.execute('SELECT original_caption, file_id, sender FROM files WHERE file_date BETWEEN ? AND ?', (start_date, end_date))
@@ -261,6 +269,11 @@ async def inline_calendar_handler(update: Update, context: ContextTypes.DEFAULT_
                 await context.bot.send_document(chat_id=query.message.chat_id, document=file_id, caption=text)
 
 if __name__ == '__main__':
+    # Flask ဆာဗာကို Background တွင် စတင်ခြင်း (Render Sleep မသွားစေရန်)
+    flask_thread = threading.Thread(target=run_flask)
+    flask_thread.daemon = True
+    flask_thread.start()
+
     TOKEN = "8883799522:AAEKrTtdrBr3keR3lxRLYdMvU-eER-7Xt3Q"
     
     application = ApplicationBuilder().token(TOKEN).post_init(post_init).build()
@@ -276,5 +289,5 @@ if __name__ == '__main__':
     media_filter = filters.PHOTO | filters.Document.ALL | filters.VIDEO | filters.AUDIO | filters.ANIMATION
     application.add_handler(MessageHandler(media_filter, capture_group_media))
     
-    print("Archive Bot (Calendar UI Added) စတင် အလုပ်လုပ်နေပါပြီ...")
-    application.run_polling()
+    print("Archive Bot (Calendar UI & Flask Keep-Alive Added) စတင် အလုပ်လုပ်နေပါပြီ...")
+    application.run_polling(drop_pending_updates=True)
