@@ -37,6 +37,7 @@ def init_db():
             search_text TEXT,
             original_caption TEXT,
             file_id TEXT,
+            file_type TEXT,
             local_path TEXT,
             sender TEXT,
             file_date TEXT
@@ -70,21 +71,28 @@ async def capture_group_media(update: Update, context: ContextTypes.DEFAULT_TYPE
      
     file_obj = None
     file_name = ""
+    file_type = "unknown"
+
     if message.document:
         file_obj = message.document
         file_name = file_obj.file_name or "document"
+        file_type = "document"
     elif message.photo:
         file_obj = message.photo[-1]
         file_name = f"photo_{file_obj.file_unique_id}.jpg"
+        file_type = "photo"
     elif message.video:
         file_obj = message.video
         file_name = file_obj.file_name or f"video_{file_obj.file_unique_id}.mp4"
+        file_type = "video"
     elif message.audio:
         file_obj = message.audio
         file_name = file_obj.file_name or "audio"
+        file_type = "audio"
     elif message.animation:
         file_obj = message.animation
         file_name = file_obj.file_name or "animation.mp4"
+        file_type = "animation"
      
     if file_obj:
         caption = message.caption or ""
@@ -108,13 +116,28 @@ async def capture_group_media(update: Update, context: ContextTypes.DEFAULT_TYPE
             conn = sqlite3.connect('archive.db')
             cursor = conn.cursor()
             cursor.execute('''
-                INSERT INTO files (search_text, original_caption, file_id, local_path, sender, file_date)
-                VALUES (?, ?, ?, ?, ?, ?)
-            ''', (combined_text.lower(), original_caption, file_obj.file_id, local_path, sender, file_date))
+                INSERT INTO files (search_text, original_caption, file_id, file_type, local_path, sender, file_date)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            ''', (combined_text.lower(), original_caption, file_obj.file_id, file_type, local_path, sender, file_date))
             conn.commit()
             conn.close()
         except Exception as e:
             logging.error(f"Database error: {e}")
+
+# ဖိုင်အမျိုးအစားအလိုက် ပြန်လည်ပို့ဆောင်ပေးသည့် Helper Function
+async def send_media_result(update_or_query, file_id, file_type, text, chat_id=None):
+    target_chat_id = chat_id if chat_id else update_or_query.message.chat_id
+    try:
+        if file_type == 'photo':
+            await update_or_query.get_bot().send_photo(chat_id=target_chat_id, photo=file_id, caption=text)
+        elif file_type == 'video':
+            await update_or_query.get_bot().send_video(chat_id=target_chat_id, video=file_id, caption=text)
+        elif file_type == 'audio':
+            await update_or_query.get_bot().send_audio(chat_id=target_chat_id, audio=file_id, caption=text)
+        else:
+            await update_or_query.get_bot().send_document(chat_id=target_chat_id, document=file_id, caption=text)
+    except Exception as e:
+        logging.error(f"Media send error: {e}")
 
 async def search_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
@@ -123,7 +146,7 @@ async def search_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyword = " ".join(context.args).lower()
     conn = sqlite3.connect('archive.db')
     cursor = conn.cursor()
-    cursor.execute('SELECT original_caption, file_id, sender FROM files WHERE search_text LIKE ?', (f'%{keyword}%',))
+    cursor.execute('SELECT original_caption, file_id, file_type, sender FROM files WHERE search_text LIKE ?', (f'%{keyword}%',))
     results = cursor.fetchall()
     conn.close()
      
@@ -132,9 +155,9 @@ async def search_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
      
     for row in results:
-        original_caption, file_id, sender = row
+        original_caption, file_id, file_type, sender = row
         text = f"👤 တင်သူ: {sender}\n📝 အချက်အလက်:\n{original_caption}"
-        await update.message.reply_document(document=file_id, caption=text)
+        await send_media_result(update, file_id, file_type, text)
 
 async def search_by_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
@@ -143,7 +166,7 @@ async def search_by_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
     target_date = context.args[0].lower()
     conn = sqlite3.connect('archive.db')
     cursor = conn.cursor()
-    cursor.execute('SELECT original_caption, file_id, sender FROM files WHERE file_date = ?', (target_date,))
+    cursor.execute('SELECT original_caption, file_id, file_type, sender FROM files WHERE file_date = ?', (target_date,))
     results = cursor.fetchall()
     conn.close()
      
@@ -152,9 +175,9 @@ async def search_by_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
      
     for row in results:
-        original_caption, file_id, sender = row
+        original_caption, file_id, file_type, sender = row
         text = f"📅 ရက်စွဲကိုက်ညီသော ဖိုင်:\n👤 တင်သူ: {sender}\n📝 အချက်အလက်:\n{original_caption}"
-        await update.message.reply_document(document=file_id, caption=text)
+        await send_media_result(update, file_id, file_type, text)
 
 async def search_by_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
@@ -163,7 +186,7 @@ async def search_by_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     username_keyword = " ".join(context.args).lower()
     conn = sqlite3.connect('archive.db')
     cursor = conn.cursor()
-    cursor.execute('SELECT original_caption, file_id, sender FROM files WHERE LOWER(sender) LIKE ?', (f'%{username_keyword}%',))
+    cursor.execute('SELECT original_caption, file_id, file_type, sender FROM files WHERE LOWER(sender) LIKE ?', (f'%{username_keyword}%',))
     results = cursor.fetchall()
     conn.close()
      
@@ -172,9 +195,9 @@ async def search_by_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
      
     for row in results:
-        original_caption, file_id, sender = row
+        original_caption, file_id, file_type, sender = row
         text = f"👤 ဝန်ထမ်းအမည်: {sender}\n📝 အချက်အလက်:\n{original_caption}"
-        await update.message.reply_document(document=file_id, caption=text)
+        await send_media_result(update, file_id, file_type, text)
 
 async def stats_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
     conn = sqlite3.connect('archive.db')
@@ -255,7 +278,7 @@ async def inline_calendar_handler(update: Update, context: ContextTypes.DEFAULT_
              
             conn = sqlite3.connect('archive.db')
             cursor = conn.cursor()
-            cursor.execute('SELECT original_caption, file_id, sender FROM files WHERE file_date BETWEEN ? AND ?', (start_date, end_date))
+            cursor.execute('SELECT original_caption, file_id, file_type, sender FROM files WHERE file_date BETWEEN ? AND ?', (start_date, end_date))
             results = cursor.fetchall()
             conn.close()
              
@@ -264,9 +287,9 @@ async def inline_calendar_handler(update: Update, context: ContextTypes.DEFAULT_
                 return
              
             for row in results:
-                original_caption, file_id, sender = row
+                original_caption, file_id, file_type, sender = row
                 text = f"📅 ရက်အကွာအဝေး ကိုက်ညီသော ဖိုင်:\n👤 တင်သူ: {sender}\n📝 အချက်အလက်:\n{original_caption}"
-                await context.bot.send_document(chat_id=query.message.chat_id, document=file_id, caption=text)
+                await send_media_result(query, file_id, file_type, text, chat_id=query.message.chat_id)
 
 if __name__ == '__main__':
     # Flask ဆာဗာကို Background တွင် စတင်ခြင်း (Render Sleep မသွားစေရန်)
@@ -274,9 +297,8 @@ if __name__ == '__main__':
     flask_thread.daemon = True
     flask_thread.start()
 
-    # Render Environment Variable ထဲကနေ TOKEN ကို လှမ်းယူပါမည်
     TOKEN = os.environ.get("BOT_TOKEN")
-    
+     
     application = ApplicationBuilder().token(TOKEN).post_init(post_init).build()
      
     application.add_handler(CommandHandler('start', start))
@@ -290,5 +312,5 @@ if __name__ == '__main__':
     media_filter = filters.PHOTO | filters.Document.ALL | filters.VIDEO | filters.AUDIO | filters.ANIMATION
     application.add_handler(MessageHandler(media_filter, capture_group_media))
      
-    print("Archive Bot (Calendar UI & Flask Keep-Alive Added) စတင် အလုပ်လုပ်နေပါပြီ...")
+    print("Archive Bot (Photo Fix Added) စတင် အလုပ်လုပ်နေပါပြီ...")
     application.run_polling(drop_pending_updates=True)
