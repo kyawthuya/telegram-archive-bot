@@ -1,5 +1,4 @@
 import os 
-import sqlite3 
 import re 
 import threading 
 from datetime import datetime 
@@ -7,6 +6,8 @@ from flask import Flask
 from telegram import Update, BotCommand, InlineKeyboardMarkup, InlineKeyboardButton 
 from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler, CallbackQueryHandler, filters 
 import logging 
+import psycopg2 
+from urllib.parse import urlparse
 
 logging.basicConfig( 
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', 
@@ -28,23 +29,42 @@ def run_flask():
     app_flask.run(host='0.0.0.0', port=port) 
 # ------------------------------------------------ 
 
+def get_db_connection():
+    database_url = os.environ.get("DATABASE_URL")
+    if database_url:
+        url = urlparse(database_url)
+        return psycopg2.connect(
+            database=url.path[1:],
+            user=url.username,
+            password=url.password,
+            host=url.hostname,
+            port=url.port
+        )
+    else:
+        # Local fallback if DATABASE_URL is not set
+        return psycopg2.connect("dbname=postgres user=postgres password=postgres host=localhost")
+
 def init_db(): 
-    conn = sqlite3.connect('archive.db') 
-    cursor = conn.cursor() 
-    cursor.execute(''' 
-        CREATE TABLE IF NOT EXISTS files ( 
-            id INTEGER PRIMARY KEY AUTOINCREMENT, 
-            search_text TEXT, 
-            original_caption TEXT, 
-            file_id TEXT, 
-            file_type TEXT, 
-            local_path TEXT, 
-            sender TEXT, 
-            file_date TEXT 
-        ) 
-    ''') 
-    conn.commit() 
-    conn.close() 
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor() 
+        cursor.execute(''' 
+            CREATE TABLE IF NOT EXISTS files ( 
+                id SERIAL PRIMARY KEY, 
+                search_text TEXT, 
+                original_caption TEXT, 
+                file_id TEXT, 
+                file_type TEXT, 
+                local_path TEXT, 
+                sender TEXT, 
+                file_date DATE 
+            ) 
+        ''') 
+        conn.commit() 
+        cursor.close()
+        conn.close()
+    except Exception as e:
+        logging.error(f"Database init error: {e}")
 
 init_db() 
 
@@ -105,42 +125,46 @@ async def handle_incoming_message(update: Update, context: ContextTypes.DEFAULT_
             elif replied_msg.photo:
                 file_name = f"photo_{replied_msg.photo[-1].file_unique_id}.jpg"
 
-            conn = sqlite3.connect('archive.db') 
-            cursor = conn.cursor() 
-            
-            cursor.execute('SELECT id FROM files WHERE file_id = ?', (replied_file_id,)) 
-            row = cursor.fetchone() 
-            
-            combined_text = f"{file_name} {new_caption}".strip().lower() 
-            original_caption = f"📁 {file_name}\n📝 {new_caption}" 
-            sender = message.from_user.first_name if message.from_user else "Unknown" 
-            date_match = re.search(r'\d{4}-\d{2}-\d{2}', combined_text) 
-            file_date = date_match.group(0) if date_match else datetime.now().strftime('%Y-%m-%d') 
-
-            local_path = None
-            if "#save" in new_caption.lower():
-                try:
-                    file = await context.bot.get_file(replied_file_id)
-                    local_path = os.path.join(DOWNLOAD_DIR, file_name)
-                    await file.download_to_drive(local_path)
-                except Exception as e:
-                    logging.error(f"Local save error: {e}")
-
-            if row: 
-                cursor.execute(''' 
-                    UPDATE files SET search_text = ?, original_caption = ?, file_type = ?, sender = ? WHERE file_id = ? 
-                ''', (combined_text, original_caption, file_type, sender, replied_file_id)) 
-            else: 
-                cursor.execute(''' 
-                    INSERT INTO files (search_text, original_caption, file_id, file_type, local_path, sender, file_date) 
-                    VALUES (?, ?, ?, ?, ?, ?, ?) 
-                ''', (combined_text, original_caption, replied_file_id, file_type, local_path, sender, file_date)) 
+            try:
+                conn = get_db_connection() 
+                cursor = conn.cursor() 
                 
-            conn.commit() 
-            conn.close() 
-            
-            await message.reply_text("✅ ဤဖိုင်အတွက် Caption ကို အောင်မြင်စွာ သိမ်းဆည်းပြီးပါပြီ။") 
-            return 
+                cursor.execute('SELECT id FROM files WHERE file_id = %s', (replied_file_id,)) 
+                row = cursor.fetchone() 
+                
+                combined_text = f"{file_name} {new_caption}".strip().lower() 
+                original_caption = f"📁 {file_name}\n📝 {new_caption}" 
+                sender = message.from_user.first_name if message.from_user else "Unknown" 
+                date_match = re.search(r'\d{4}-\d{2}-\d{2}', combined_text) 
+                file_date = date_match.group(0) if date_match else datetime.now().strftime('%Y-%m-%d') 
+
+                local_path = None
+                if "#save" in new_caption.lower():
+                    try:
+                        file = await context.bot.get_file(replied_file_id)
+                        local_path = os.path.join(DOWNLOAD_DIR, file_name)
+                        await file.download_to_drive(local_path)
+                    except Exception as e:
+                        logging.error(f"Local save error: {e}")
+
+                if row: 
+                    cursor.execute(''' 
+                        UPDATE files SET search_text = %s, original_caption = %s, file_type = %s, sender = %s WHERE file_id = %s 
+                    ''', (combined_text, original_caption, file_type, sender, replied_file_id)) 
+                else: 
+                    cursor.execute(''' 
+                        INSERT INTO files (search_text, original_caption, file_id, file_type, local_path, sender, file_date) 
+                        VALUES (%s, %s, %s, %s, %s, %s, %s) 
+                    ''', (combined_text, original_caption, replied_file_id, file_type, local_path, sender, file_date)) 
+                    
+                conn.commit() 
+                cursor.close()
+                conn.close() 
+                
+                await message.reply_text("✅ ဤဖိုင်အတွက် Caption ကို အောင်မြင်စွာ သိမ်းဆည်းပြီးပါပြီ။") 
+                return 
+            except Exception as e:
+                logging.error(f"Reply update error: {e}")
 
     # ၂။ ပုံမှန် ဖိုင်အသစ် တင်လာခြင်းကို စစ်ဆေးခြင်း 
     file_obj = None 
@@ -174,7 +198,6 @@ async def handle_incoming_message(update: Update, context: ContextTypes.DEFAULT_
     caption = message.caption or "" 
     media_group_id = message.media_group_id 
 
-    # Media Group (ဖိုင်တွဲတင်ခြင်း) ဖြစ်ပါက Caption ကို စီမံခြင်း
     if media_group_id:
         if 'media_group_captions' not in context.bot_data:
             context.bot_data['media_group_captions'] = {}
@@ -189,7 +212,6 @@ async def handle_incoming_message(update: Update, context: ContextTypes.DEFAULT_
             await message.reply_text("⚠️ ကျေးဇူးပြု၍ ဤဖိုင်နှင့်အတူ Caption ထည့်ပါ သို့မဟုတ် ဤဖိုင်ကို Reply လုပ်၍ Caption ရေးပါ")
             return
         else:
-            # Media group ဖြစ်ပြီး caption မပါသေးပါက ခေတ္တလစ်ဟာမှုကို ကာကွယ်ရန် အလွတ်ဖြင့် ဆက်သွားခွင့်ပြုမည် (သို့မဟုတ် group caption ရလာပါက အကျုံးဝင်မည်)
             caption = context.bot_data['media_group_captions'].get(media_group_id, "")
 
     combined_text = f"{file_name} {caption}".strip().lower() 
@@ -209,16 +231,17 @@ async def handle_incoming_message(update: Update, context: ContextTypes.DEFAULT_
             logging.error(f"Local save error: {e}") 
       
     try: 
-        conn = sqlite3.connect('archive.db') 
+        conn = get_db_connection() 
         cursor = conn.cursor() 
         cursor.execute(''' 
             INSERT INTO files (search_text, original_caption, file_id, file_type, local_path, sender, file_date) 
-            VALUES (?, ?, ?, ?, ?, ?, ?) 
-        ''', (combined_text, original_caption, file_obj.file_id, file_type, local_path, sender, file_date)) 
+            VALUES (%s, %s, %s, %s, %s, %s, %s) 
+        ''', (combined_text.lower(), original_caption, file_obj.file_id, file_type, local_path, sender, file_date)) 
         conn.commit() 
+        cursor.close()
         conn.close() 
     except Exception as e: 
-        logging.error(f"Database error: {e}") 
+        logging.error(f"Database insert error: {e}") 
 
 async def send_media_result(update_or_query, file_id, file_type, text, chat_id=None): 
     target_chat_id = chat_id if chat_id else update_or_query.message.chat_id 
@@ -239,11 +262,16 @@ async def search_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ ရှာလိုသည့် စကားလုံးထည့်ပါ။ ဥပမာ: /s meeting") 
         return 
     keyword = " ".join(context.args).lower() 
-    conn = sqlite3.connect('archive.db') 
-    cursor = conn.cursor() 
-    cursor.execute('SELECT original_caption, file_id, file_type, sender FROM files WHERE search_text LIKE ?', (f'%{keyword}%',)) 
-    results = cursor.fetchall() 
-    conn.close() 
+    try:
+        conn = get_db_connection() 
+        cursor = conn.cursor() 
+        cursor.execute('SELECT original_caption, file_id, file_type, sender FROM files WHERE search_text LIKE %s', (f'%{keyword}%',)) 
+        results = cursor.fetchall() 
+        cursor.close()
+        conn.close() 
+    except Exception as e:
+        logging.error(f"Search error: {e}")
+        return
       
     if not results: 
         await update.message.reply_text("❌ အဲ့ဒီစကားလုံးဖြင့် ရှာမတွေ့ပါ။") 
@@ -259,11 +287,16 @@ async def search_by_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ ရက်စွဲထည့်ပါ။ ဥပမာ: /d 2026-08-30") 
         return 
     target_date = context.args[0].lower() 
-    conn = sqlite3.connect('archive.db') 
-    cursor = conn.cursor() 
-    cursor.execute('SELECT original_caption, file_id, file_type, sender FROM files WHERE file_date = ?', (target_date,)) 
-    results = cursor.fetchall() 
-    conn.close() 
+    try:
+        conn = get_db_connection() 
+        cursor = conn.cursor() 
+        cursor.execute('SELECT original_caption, file_id, file_type, sender FROM files WHERE file_date = %s', (target_date,)) 
+        results = cursor.fetchall() 
+        cursor.close()
+        conn.close() 
+    except Exception as e:
+        logging.error(f"Search by date error: {e}")
+        return
       
     if not results: 
         await update.message.reply_text("❌ အဲ့ဒီရက်စွဲဖြင့် ရှာမတွေ့ပါ။") 
@@ -279,11 +312,16 @@ async def search_by_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ ဝန်ထမ်းအမည် ထည့်ပါ။ ဥပမာ: /user Kyaw") 
         return 
     username_keyword = " ".join(context.args).lower() 
-    conn = sqlite3.connect('archive.db') 
-    cursor = conn.cursor() 
-    cursor.execute('SELECT original_caption, file_id, file_type, sender FROM files WHERE LOWER(sender) LIKE ?', (f'%{username_keyword}%',)) 
-    results = cursor.fetchall() 
-    conn.close() 
+    try:
+        conn = get_db_connection() 
+        cursor = conn.cursor() 
+        cursor.execute('SELECT original_caption, file_id, file_type, sender FROM files WHERE LOWER(sender) LIKE %s', (f'%{username_keyword}%',)) 
+        results = cursor.fetchall() 
+        cursor.close()
+        conn.close() 
+    except Exception as e:
+        logging.error(f"Search by user error: {e}")
+        return
       
     if not results: 
         await update.message.reply_text(f"❌ '{username_keyword}' အမည်ဖြင့် တင်ထားသော ဖိုင် မတွေ့ရှိပါ။") 
@@ -295,13 +333,18 @@ async def search_by_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await send_media_result(update, file_id, file_type, text) 
 
 async def stats_data(update: Update, context: ContextTypes.DEFAULT_TYPE): 
-    conn = sqlite3.connect('archive.db') 
-    cursor = conn.cursor() 
-    cursor.execute('SELECT COUNT(*) FROM files') 
-    total_files = cursor.fetchone()[0] 
-    cursor.execute('SELECT COUNT(*) FROM files WHERE local_path IS NOT NULL') 
-    local_saved_files = cursor.fetchone()[0] 
-    conn.close() 
+    try:
+        conn = get_db_connection() 
+        cursor = conn.cursor() 
+        cursor.execute('SELECT COUNT(*) FROM files') 
+        total_files = cursor.fetchone()[0] 
+        cursor.execute('SELECT COUNT(*) FROM files WHERE local_path IS NOT NULL') 
+        local_saved_files = cursor.fetchone()[0] 
+        cursor.close()
+        conn.close() 
+    except Exception as e:
+        logging.error(f"Stats error: {e}")
+        return
       
     stats_text = ( 
         f"📊 **Archive Database အကျဉ်းချုပ် စာရင်းအင်း**\n\n" 
@@ -370,11 +413,16 @@ async def inline_calendar_handler(update: Update, context: ContextTypes.DEFAULT_
                   
             await query.edit_message_text(text=f"🔍 ရှာဖွေနေသည်... ({start_date} မှ {end_date} ထိ)") 
               
-            conn = sqlite3.connect('archive.db') 
-            cursor = conn.cursor() 
-            cursor.execute('SELECT original_caption, file_id, file_type, sender FROM files WHERE file_date BETWEEN ? AND ?', (start_date, end_date)) 
-            results = cursor.fetchall() 
-            conn.close() 
+            try:
+                conn = get_db_connection() 
+                cursor = conn.cursor() 
+                cursor.execute('SELECT original_caption, file_id, file_type, sender FROM files WHERE file_date BETWEEN %s AND %s', (start_date, end_date)) 
+                results = cursor.fetchall() 
+                cursor.close()
+                conn.close() 
+            except Exception as e:
+                logging.error(f"Calendar range error: {e}")
+                return
               
             if not results: 
                 await context.bot.send_message(chat_id=query.message.chat_id, text=f"❌ {start_date} မှ {end_date} အတွင်း ဖိုင်ရှာမတွေ့ပါ။") 
@@ -390,7 +438,7 @@ if __name__ == '__main__':
     flask_thread.daemon = True 
     flask_thread.start() 
 
-    TOKEN= os.environ.get("BOT_TOKEN")
+    TOKEN = os.environ.get("BOT_TOKEN") 
       
     application = ApplicationBuilder().token(TOKEN).post_init(post_init).build() 
       
@@ -405,5 +453,5 @@ if __name__ == '__main__':
     all_message_filter = filters.PHOTO | filters.Document.ALL | filters.VIDEO | filters.AUDIO | filters.ANIMATION | (filters.TEXT & ~filters.COMMAND)
     application.add_handler(MessageHandler(all_message_filter, handle_incoming_message)) 
       
-    print("Archive Bot စတင် အလုပ်လုပ်နေပါပြီ...") 
+    print("Archive Bot (Supabase PostgreSQL Integrated) စတင် အလုပ်လုပ်နေပါပြီ...") 
     application.run_polling(drop_pending_updates=True)
