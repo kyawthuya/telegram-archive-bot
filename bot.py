@@ -17,12 +17,26 @@ logging.basicConfig(
 DOWNLOAD_DIR = "downloads" 
 os.makedirs(DOWNLOAD_DIR, exist_ok=True) 
 
-# --- FLASK WEB SERVER (Render Sleep မသွားစေရန်) --- 
+# --- FLASK WEB SERVER (Render နှင့် Supabase အိပ်မသွားစေရန်) --- 
 app_flask = Flask(__name__) 
 
 @app_flask.route('/') 
 def home(): 
     return "Archive Bot is alive and running!" 
+
+# Supabase ကို Activity ရှိနေစေရန် ပုံမှန် Ping လုပ်ပေးမည့် Route အသစ်
+@app_flask.route('/ping-db')
+def ping_db():
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute('SELECT 1') # Database သို့ Simple Query လှမ်းလုပ်ခြင်းဖြင့် Active ဖြစ်နေစေရန်
+        cursor.close()
+        conn.close()
+        return "Supabase Database Pinged Successfully!", 200
+    except Exception as e:
+        logging.error(f"Database ping error: {e}")
+        return f"Database Ping Failed: {e}", 500
 
 def run_flask(): 
     port = int(os.environ.get("PORT", 10000)) 
